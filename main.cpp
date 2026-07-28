@@ -1,50 +1,103 @@
 #include "raylib.h"
 #include "raymath.h"
 #include <vector>
+#include <string>
 
 struct Target {
     Vector3 position;
     Vector3 size;
     BoundingBox box;
-    bool isHit;
+    float health = 100.0f;
+    bool isHit = false;
 };
 
+// --- ENUM FOR WEAPON TYPES ---
+enum WeaponType {
+    WEAPON_PISTOL = 0,
+    WEAPON_SHOTGUN,
+    WEAPON_RIFLE,
+    WEAPON_COUNT
+};
+
+// --- DATA-DRIVEN WEAPON DATA STRUCT ---
 struct Weapon {
-    int maxClipSize = 10;
-    int currentAmmo = 10;
-    int totalAmmo = 30;
-    float fireRate = 0.15f;
-    float fireTimer = 0.0f;
+    std::string name;
     
+    // Weapon Stats
+    float damage = 25.0f;
+    float fireRate = 0.2f;       // Delay between shots
+    float spreadAngle = 0.0f;    // In degrees
+    int pelletsPerShot = 1;      // 1 for single bullet, >1 for shotguns
+    
+    // Recoil Params
+    float recoilKick = 0.4f;     // Camera upward kick per shot
+    float kickbackZ = 0.2f;      // 3D Model displacement
+    
+    // Ammo & Reloading
+    int maxClip = 12;
+    int currentAmmo = 12;
+    int totalAmmo = 48;
+    float reloadTime = 1.2f;
+
+    // Visuals
+    Vector3 modelSize = { 0.1f, 0.15f, 0.5f }; // Gun dimensions
+    Color modelColor = DARKGRAY;
+};
+
+// --- WEAPON CONTROLLER / INVENTORY STATE ---
+struct WeaponController {
+    std::vector<Weapon> inventory;
+    int activeIndex = 0;
+    
+    // Active Timers & Recoil State
+    float fireTimer = 0.0f;
     bool isReloading = false;
-    float reloadTime = 1.8f;
     float reloadTimer = 0.0f;
 
     float recoilPitch = 0.0f;
     float kickbackZ = 0.0f;
 
-    // --- MUZZLE FLASH SYSTEM ---
     bool flashActive = false;
     float flashTimer = 0.0f;
-    float flashDuration = 0.04f; // Flash lasts for 40 milliseconds
     Vector3 muzzlePosition = { 0 };
+
+    Weapon& GetActive() {
+        return inventory[activeIndex];
+    }
+
+    void SwitchWeapon(int newIndex) {
+        if (newIndex < 0 || newIndex >= (int)inventory.size() || newIndex == activeIndex) return;
+        
+        // Cancel active reload on switch
+        isReloading = false;
+        reloadTimer = 0.0f;
+        fireTimer = 0.1f; // Brief switch delay
+        activeIndex = newIndex;
+    }
 };
+
+// Helper function: Helper to apply random angular spread to a ray direction vector
+Vector3 ApplySpread(Vector3 direction, Vector3 up, Vector3 right, float spreadDegrees) {
+    if (spreadDegrees <= 0.001f) return direction;
+
+    float radSpread = spreadDegrees * DEG2RAD;
+    float randomYaw = GetRandomValue(-1000, 1000) * 0.001f * radSpread;
+    float randomPitch = GetRandomValue(-1000, 1000) * 0.001f * radSpread;
+
+    Vector3 offsetDir = Vector3Add(direction, Vector3Scale(right, randomYaw));
+    offsetDir = Vector3Add(offsetDir, Vector3Scale(up, randomPitch));
+    
+    return Vector3Normalize(offsetDir);
+}
 
 int main() {
     const int screenWidth = 1280;
     const int screenHeight = 720;
-    InitWindow(screenWidth, screenHeight, "C++ Raylib Shooter - Sound & Muzzle Flash");
-    
-    // 1. INITIALIZE AUDIO DEVICE
-    InitAudioDevice();
+    InitWindow(screenWidth, screenHeight, "C++ Raylib Shooter - Multi-Weapon Inventory Engine");
 
-    // 2. LOAD SOUND EFFECTS
+    InitAudioDevice();
     Sound fxGunshot = LoadSound("gunshot.wav");
     Sound fxReload  = LoadSound("reload.wav");
-
-    // Adjust sound volume
-    SetSoundVolume(fxGunshot, 0.8f);
-    SetSoundVolume(fxReload, 0.6f);
 
     SetTargetFPS(60);
 
@@ -57,12 +110,64 @@ int main() {
 
     DisableCursor();
 
-    Weapon rifle;
+    // --- SETUP INVENTORY WEAPONS ---
+    WeaponController playerWeapons;
 
+    // 1. Pistol (Semi-auto, zero spread, fast reload)
+    Weapon pistol;
+    pistol.name = "Pistol";
+    pistol.damage = 35.0f;
+    pistol.fireRate = 0.2f;
+    pistol.spreadAngle = 0.2f;
+    pistol.pelletsPerShot = 1;
+    pistol.recoilKick = 0.3f;
+    pistol.kickbackZ = 0.15f;
+    pistol.maxClip = 12;
+    pistol.currentAmmo = 12;
+    pistol.totalAmmo = 48;
+    pistol.reloadTime = 1.0f;
+    pistol.modelSize = (Vector3){ 0.08f, 0.12f, 0.35f };
+    pistol.modelColor = GRAY;
+
+    // 2. Shotgun (High damage, heavy recoil, 8 pellets, wide spread)
+    Weapon shotgun;
+    shotgun.name = "Shotgun";
+    shotgun.damage = 15.0f; // 15 dmg per pellet * 8 pellets = 120 max damage
+    shotgun.fireRate = 0.8f;
+    shotgun.spreadAngle = 4.5f; // Wide pellet cone
+    shotgun.pelletsPerShot = 8;
+    shotgun.recoilKick = 1.8f;
+    shotgun.kickbackZ = 0.5f;
+    shotgun.maxClip = 6;
+    shotgun.currentAmmo = 6;
+    shotgun.totalAmmo = 24;
+    shotgun.reloadTime = 2.2f;
+    shotgun.modelSize = (Vector3){ 0.12f, 0.18f, 0.7f };
+    shotgun.modelColor = BROWN;
+
+    // 3. Assault Rifle (Fully automatic, high fire rate, progressive recoil & slight spread)
+    Weapon rifle;
+    rifle.name = "Assault Rifle";
+    rifle.damage = 22.0f;
+    rifle.fireRate = 0.09f;
+    rifle.spreadAngle = 1.2f;
+    rifle.pelletsPerShot = 1;
+    rifle.recoilKick = 0.25f;
+    rifle.kickbackZ = 0.2f;
+    rifle.maxClip = 30;
+    rifle.currentAmmo = 30;
+    rifle.totalAmmo = 120;
+    rifle.reloadTime = 1.6f;
+    rifle.modelSize = (Vector3){ 0.1f, 0.15f, 0.6f };
+    rifle.modelColor = DARKGRAY;
+
+    playerWeapons.inventory = { pistol, shotgun, rifle };
+
+    // Target Setup
     std::vector<Target> targets = {
-        { { -4.0f, 1.5f, 0.0f }, { 2.0f, 3.0f, 2.0f }, {}, false },
-        { {  0.0f, 1.5f, -3.0f }, { 2.0f, 3.0f, 2.0f }, {}, false },
-        { {  4.0f, 1.5f, 0.0f }, { 2.0f, 3.0f, 2.0f }, {}, false }
+        { { -4.0f, 1.5f, 0.0f }, { 2.0f, 3.0f, 2.0f }, {}, 100.0f, false },
+        { {  0.0f, 1.5f, -3.0f }, { 2.0f, 3.0f, 2.0f }, {}, 100.0f, false },
+        { {  4.0f, 1.5f, 0.0f }, { 2.0f, 3.0f, 2.0f }, {}, 100.0f, false }
     };
 
     for (auto& t : targets) {
@@ -72,109 +177,122 @@ int main() {
         };
     }
 
-    RayCollision closestHit = { 0 };
-    bool rayActive = false;
-    Vector3 rayStart = { 0 };
-    Vector3 rayEnd = { 0 };
-    float rayTimer = 0.0f;
+    // Dynamic Tracer Visual Lines for Shotgun Pellets
+    struct Tracer { Vector3 start; Vector3 end; float timer; };
+    std::vector<Tracer> activeTracers;
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
+        Weapon& activeGun = playerWeapons.GetActive();
 
-        if (rifle.fireTimer > 0.0f) rifle.fireTimer -= dt;
+        // 1. INPUT: WEAPON SWITCHING (Keys 1, 2, 3 or Scroll Wheel)
+        if (IsKeyPressed(KEY_ONE))   playerWeapons.SwitchWeapon(0);
+        if (IsKeyPressed(KEY_TWO))   playerWeapons.SwitchWeapon(1);
+        if (IsKeyPressed(KEY_THREE)) playerWeapons.SwitchWeapon(2);
 
-        // Reload Logic & Sound
-        if (rifle.isReloading) {
-            rifle.reloadTimer -= dt;
-            if (rifle.reloadTimer <= 0.0f) {
-                int neededAmmo = rifle.maxClipSize - rifle.currentAmmo;
-                int ammoToLoad = (rifle.totalAmmo >= neededAmmo) ? neededAmmo : rifle.totalAmmo;
+        float mouseWheel = GetMouseWheelMove();
+        if (mouseWheel > 0) playerWeapons.SwitchWeapon((playerWeapons.activeIndex + 1) % WEAPON_COUNT);
+        if (mouseWheel < 0) playerWeapons.SwitchWeapon((playerWeapons.activeIndex - 1 + WEAPON_COUNT) % WEAPON_COUNT);
+
+        // 2. RELOAD & FIRE TIMERS
+        if (playerWeapons.fireTimer > 0.0f) playerWeapons.fireTimer -= dt;
+
+        if (playerWeapons.isReloading) {
+            playerWeapons.reloadTimer -= dt;
+            if (playerWeapons.reloadTimer <= 0.0f) {
+                int needed = activeGun.maxClip - activeGun.currentAmmo;
+                int ammoToLoad = (activeGun.totalAmmo >= needed) ? needed : activeGun.totalAmmo;
                 
-                rifle.currentAmmo += ammoToLoad;
-                rifle.totalAmmo -= ammoToLoad;
-                rifle.isReloading = false;
+                activeGun.currentAmmo += ammoToLoad;
+                activeGun.totalAmmo -= ammoToLoad;
+                playerWeapons.isReloading = false;
             }
         }
 
-        // Trigger manual reload
-        if (IsKeyPressed(KEY_R) && !rifle.isReloading && rifle.currentAmmo < rifle.maxClipSize && rifle.totalAmmo > 0) {
-            rifle.isReloading = true;
-            rifle.reloadTimer = rifle.reloadTime;
-            
-            // Play reload audio
+        if (IsKeyPressed(KEY_R) && !playerWeapons.isReloading && activeGun.currentAmmo < activeGun.maxClip && activeGun.totalAmmo > 0) {
+            playerWeapons.isReloading = true;
+            playerWeapons.reloadTimer = activeGun.reloadTime;
             PlaySound(fxReload);
         }
 
-        // Recoil decay
-        rifle.recoilPitch = Lerp(rifle.recoilPitch, 0.0f, 12.0f * dt);
-        rifle.kickbackZ = Lerp(rifle.kickbackZ, 0.0f, 15.0f * dt);
+        // 3. RECOIL DECAY
+        playerWeapons.recoilPitch = Lerp(playerWeapons.recoilPitch, 0.0f, 12.0f * dt);
+        playerWeapons.kickbackZ = Lerp(playerWeapons.kickbackZ, 0.0f, 15.0f * dt);
 
-        // Manage Muzzle Flash Timer
-        if (rifle.flashActive) {
-            rifle.flashTimer -= dt;
-            if (rifle.flashTimer <= 0.0f) {
-                rifle.flashActive = false;
-            }
+        if (playerWeapons.flashActive) {
+            playerWeapons.flashTimer -= dt;
+            if (playerWeapons.flashTimer <= 0.0f) playerWeapons.flashActive = false;
         }
 
         UpdateCamera(&camera, CAMERA_FIRST_PERSON);
-        camera.target = Vector3Add(camera.target, Vector3Scale(camera.up, rifle.recoilPitch * dt));
+        camera.target = Vector3Add(camera.target, Vector3Scale(camera.up, playerWeapons.recoilPitch * dt));
 
-        // FIRING LOGIC
-        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && rifle.fireTimer <= 0.0f && !rifle.isReloading) {
-            if (rifle.currentAmmo > 0) {
-                rifle.currentAmmo--;
-                rifle.fireTimer = rifle.fireRate;
+        // 4. FIRING LOGIC (Supports Single Shots or Automatic Holding based on gun type)
+        bool fireInput = (playerWeapons.activeIndex == WEAPON_RIFLE) ? IsMouseButtonDown(MOUSE_BUTTON_LEFT) : IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 
-                // --- 1. PLAY GUNSHOT AUDIO ---
-                // Randomize pitch slightly so every shot sounds natural and non-repetitive
-                SetSoundPitch(fxGunshot, GetRandomValue(95, 105) * 0.01f);
+        if (fireInput && playerWeapons.fireTimer <= 0.0f && !playerWeapons.isReloading) {
+            if (activeGun.currentAmmo > 0) {
+                activeGun.currentAmmo--;
+                playerWeapons.fireTimer = activeGun.fireRate;
+
+                SetSoundPitch(fxGunshot, GetRandomValue(90, 110) * 0.01f);
                 PlaySound(fxGunshot);
 
-                // --- 2. TRIGGER MUZZLE FLASH ---
-                rifle.flashActive = true;
-                rifle.flashTimer = rifle.flashDuration;
+                playerWeapons.flashActive = true;
+                playerWeapons.flashTimer = 0.04f;
 
-                // Recoil
-                rifle.recoilPitch += GetRandomValue(3, 5) * 0.1f;
-                rifle.kickbackZ += 0.25f;
+                playerWeapons.recoilPitch += activeGun.recoilKick;
+                playerWeapons.kickbackZ += activeGun.kickbackZ;
 
-                // Hitscan Raycast
+                // Base Ray Projection
                 Vector2 screenCenter = { (float)screenWidth / 2.0f, (float)screenHeight / 2.0f };
-                Ray ray = GetScreenToWorldRay(screenCenter, camera);
+                Ray baseRay = GetScreenToWorldRay(screenCenter, camera);
 
-                float closestDistance = 9999.0f;
-                int hitIndex = -1;
+                Vector3 camForward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
+                Vector3 camRight   = Vector3Normalize(Vector3CrossProduct(camForward, camera.up));
+                Vector3 camUp      = Vector3CrossProduct(camRight, camForward);
 
-                for (size_t i = 0; i < targets.size(); i++) {
-                    RayCollision collision = GetRayCollisionBox(ray, targets[i].box);
-                    if (collision.hit && collision.distance < closestDistance) {
-                        closestDistance = collision.distance;
-                        closestHit = collision;
-                        hitIndex = (int)i;
+                // FIRE PELLETS / BULLETS
+                for (int p = 0; p < activeGun.pelletsPerShot; p++) {
+                    Vector3 spreadDir = ApplySpread(baseRay.direction, camUp, camRight, activeGun.spreadAngle);
+                    Ray pelletRay = { baseRay.position, spreadDir };
+
+                    float closestDistance = 9999.0f;
+                    int hitIndex = -1;
+                    RayCollision closestHit = { 0 };
+
+                    for (size_t i = 0; i < targets.size(); i++) {
+                        RayCollision collision = GetRayCollisionBox(pelletRay, targets[i].box);
+                        if (collision.hit && collision.distance < closestDistance) {
+                            closestDistance = collision.distance;
+                            closestHit = collision;
+                            hitIndex = (int)i;
+                        }
                     }
+
+                    Vector3 tracerEnd = Vector3Add(pelletRay.position, Vector3Scale(pelletRay.direction, 100.0f));
+                    if (hitIndex != -1) {
+                        targets[hitIndex].health -= activeGun.damage;
+                        if (targets[hitIndex].health <= 0) targets[hitIndex].isHit = true;
+                        tracerEnd = closestHit.point;
+                    }
+
+                    activeTracers.push_back({ pelletRay.position, tracerEnd, 0.05f });
                 }
 
-                rayStart = ray.position;
-                if (hitIndex != -1) {
-                    targets[hitIndex].isHit = true;
-                    rayEnd = closestHit.point;
-                } else {
-                    rayEnd = Vector3Add(ray.position, Vector3Scale(ray.direction, 100.0f));
-                }
-
-                rayActive = true;
-                rayTimer = 0.05f;
-            } else if (rifle.totalAmmo > 0) {
-                rifle.isReloading = true;
-                rifle.reloadTimer = rifle.reloadTime;
+            } else if (activeGun.totalAmmo > 0) {
+                playerWeapons.isReloading = true;
+                playerWeapons.reloadTimer = activeGun.reloadTime;
                 PlaySound(fxReload);
             }
         }
 
-        if (rayActive) {
-            rayTimer -= dt;
-            if (rayTimer <= 0.0f) rayActive = false;
+        // Decay active visual bullet tracers
+        for (int i = (int)activeTracers.size() - 1; i >= 0; i--) {
+            activeTracers[i].timer -= dt;
+            if (activeTracers[i].timer <= 0.0f) {
+                activeTracers.erase(activeTracers.begin() + i);
+            }
         }
 
         // --- DRAWING ---
@@ -186,22 +304,16 @@ int main() {
 
                 for (const auto& t : targets) {
                     Color boxColor = t.isHit ? RED : DARKBLUE;
-                    
-                    // Illuminate target boxes dynamically if flash is active
-                    if (rifle.flashActive) {
-                        boxColor = YELLOW; // Simple ambient burst reaction
-                    }
-
                     DrawCubeV(t.position, t.size, boxColor);
                     DrawCubeWiresV(t.position, t.size, BLACK);
                 }
 
-                if (rayActive) {
-                    DrawLine3D(rayStart, rayEnd, RED);
-                    if (closestHit.hit) DrawSphere(closestHit.point, 0.15f, YELLOW);
+                // Render active bullet tracers
+                for (const auto& tracer : activeTracers) {
+                    DrawLine3D(tracer.start, tracer.end, RED);
                 }
 
-                // --- GUN & MUZZLE POSITIONS ---
+                // Render Current 3D Gun Model
                 Vector3 camForward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
                 Vector3 camRight   = Vector3Normalize(Vector3CrossProduct(camForward, camera.up));
                 Vector3 camUp      = Vector3CrossProduct(camRight, camForward);
@@ -209,45 +321,40 @@ int main() {
                 Vector3 gunPos = camera.position;
                 gunPos = Vector3Add(gunPos, Vector3Scale(camRight, 0.4f));
                 gunPos = Vector3Add(gunPos, Vector3Scale(camUp, -0.3f));
-                gunPos = Vector3Add(gunPos, Vector3Scale(camForward, 0.8f - rifle.kickbackZ));
+                gunPos = Vector3Add(gunPos, Vector3Scale(camForward, 0.8f - playerWeapons.kickbackZ));
 
-                // Muzzle tip position (placed at tip of gun barrel)
-                rifle.muzzlePosition = Vector3Add(gunPos, Vector3Scale(camForward, 0.4f));
+                playerWeapons.muzzlePosition = Vector3Add(gunPos, Vector3Scale(camForward, activeGun.modelSize.z));
 
-                // Draw Gun Mesh
-                DrawCube(gunPos, 0.1f, 0.15f, 0.6f, DARKGRAY);
-                DrawCubeWires(gunPos, 0.1f, 0.15f, 0.6f, BLACK);
+                DrawCube(gunPos, activeGun.modelSize.x, activeGun.modelSize.y, activeGun.modelSize.z, activeGun.modelColor);
+                DrawCubeWires(gunPos, activeGun.modelSize.x, activeGun.modelSize.y, activeGun.modelSize.z, BLACK);
 
-                // --- DRAW MUZZLE FLASH GEOMETRY ---
-                if (rifle.flashActive) {
-                    // Core flash sphere
-                    DrawSphere(rifle.muzzlePosition, 0.18f, ORANGE);
-                    
-                    // Outer flash glow
-                    DrawSphere(rifle.muzzlePosition, 0.35f, ColorAlpha(YELLOW, 0.6f));
+                if (playerWeapons.flashActive) {
+                    DrawSphere(playerWeapons.muzzlePosition, 0.2f, ORANGE);
                 }
 
             EndMode3D();
 
-            // HUD
+            // --- UI & HUD ---
             int crosshairSize = 6;
             DrawLine(screenWidth/2 - crosshairSize, screenHeight/2, screenWidth/2 + crosshairSize, screenHeight/2, GREEN);
             DrawLine(screenWidth/2, screenHeight/2 - crosshairSize, screenWidth/2, screenHeight/2 + crosshairSize, GREEN);
 
-            const char* ammoText = TextFormat("AMMO: %i / %i", rifle.currentAmmo, rifle.totalAmmo);
-            DrawText(ammoText, screenWidth - 220, screenHeight - 60, 30, (rifle.currentAmmo == 0) ? RED : BLACK);
+            // Active Weapon & Inventory Display
+            DrawText(TextFormat("WEAPON: %s [Slot %i]", activeGun.name.c_str(), playerWeapons.activeIndex + 1), 10, screenHeight - 90, 24, BLACK);
+            
+            const char* ammoText = TextFormat("AMMO: %i / %i", activeGun.currentAmmo, activeGun.totalAmmo);
+            DrawText(ammoText, 10, screenHeight - 50, 30, (activeGun.currentAmmo == 0) ? RED : DARKGRAY);
 
-            if (rifle.isReloading) {
+            if (playerWeapons.isReloading) {
                 DrawText("RELOADING...", screenWidth / 2 - 80, screenHeight / 2 + 40, 24, MAROON);
             }
 
-            DrawText("Left Click: Fire | R: Reload", 10, 10, 20, DARKGRAY);
-            DrawFPS(10, 40);
+            DrawText("1: Pistol | 2: Shotgun | 3: Rifle | Scroll Wheel: Cycle", 10, 10, 20, DARKGRAY);
+            DrawFPS(10, 35);
 
         EndDrawing();
     }
 
-    // UNLOAD AUDIO RESOURCES & CLOSE DEVICE
     UnloadSound(fxGunshot);
     UnloadSound(fxReload);
     CloseAudioDevice();
